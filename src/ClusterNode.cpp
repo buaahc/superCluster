@@ -6,11 +6,6 @@
 #include <osgEarth/CullingUtils>
 #include <osgEarthUtil/kdbush.hpp>
 #include "ClusterNode.h"
-#include "sceneNodeVisitor.h"
-#include "sceneConfig.h"
-#include "corePipeline.h"
-#include "SceneCore/CommonData/BaseData.h"
-#include "SceneCore/mutilPointModel/baseModel.h"
 
 
 typedef std::pair<int, int> TPoint;
@@ -19,13 +14,11 @@ typedef std::vector< std::size_t > TIds;
 namespace CustomUtil
 {
 
-    ModelClusterNode::ModelClusterNode(osgEarth::MapNode* mapNode, bool showPlaceNodePoi) :
+    ModelClusterNode::ModelClusterNode() :
         _radius(50),
-        _mapNode(mapNode),
         _enabled(true),
         _dirty(true),
-        _dirtyIndex(true),
-        _showPlaceNodePoi(showPlaceNodePoi)
+        _dirtyIndex(true)
     {
         setCullingActive(false);
         _horizon = new osgEarth::Horizon();
@@ -61,17 +54,6 @@ namespace CustomUtil
 
     bool ModelClusterNode::getEnabled() const { return _enabled; }
     void ModelClusterNode::setEnabled(bool enabled) { _enabled = enabled; _dirty = true; }
-
-    osgEarth::MapNode* ModelClusterNode::getMapNode() const { return _mapNode.get(); }
-    void ModelClusterNode::setMapNode(osgEarth::MapNode* mapNode)
-    {
-        if (_mapNode != mapNode)
-        {
-            _mapNode = mapNode;
-            _dirty = true;
-            _dirtyIndex = true;
-        }
-    }
 
     void ModelClusterNode::setCanClusterCallback(CanClusterCallback* callback) { _canClusterCallback = callback; _dirty = true; }
     ModelClusterNode::CanClusterCallback* ModelClusterNode::getCanClusterCallback() { return _canClusterCallback.get(); }
@@ -130,11 +112,9 @@ namespace CustomUtil
         if (!viewport) return;
 
         osg::Matrixd projMatrix = camera->getProjectionMatrix();
-        if (CConfig::Get()->versePipeline())
-            projMatrix = syzCorePipeLine::Get()->_doubleViewData.projectionMatrix;
 
         osg::Matrixd viewMatrix = camera->getViewMatrix();
-        osg::Matrixd pwMatrix= projMatrix * viewport->computeWindowMatrix();
+        osg::Matrixd pwMatrix = projMatrix * viewport->computeWindowMatrix();
 
         std::vector<ClusterCandidate> candidates;
         candidates.reserve(_nodes.size());
@@ -154,12 +134,13 @@ namespace CustomUtil
                 if (!node || (node->getNodeMask() & cv->getTraversalMask()) == 0 || cv->isCulled(*node)) continue;
 
                 CPickMatrixTransform* worldMT = static_cast<CPickMatrixTransform*>(node);
-                
+
                 // 默认隐藏，后面聚合时再设为 true
                 worldMT->_showClusterPoi = false;
 
-                osg::Vec3d world = worldMT->getMatrix().getTrans();
-                if (_horizon.valid() && !_horizon->isVisible(world)) continue;
+                //osg::Vec3d world = worldMT->getMatrix().getTrans();
+                osg::Vec3d world = worldMT->getBound().center();
+               // if (_horizon.valid() && !_horizon->isVisible(world)) continue;
 
                 osg::Vec3d viewPos = world * viewMatrix;
                 bool zValid = viewPos.z() < 0;
@@ -234,24 +215,6 @@ namespace CustomUtil
             cluster._neighborCount = actualClusteredCount;
             cluster.representativeNode = candidates[i].node;
             out.push_back(cluster);
-
-            //显示气泡poi
-            if(this->_showPlaceNodePoi)
-            {
-                CPickMatrixTransform* worldMT = static_cast<CPickMatrixTransform*>(cluster.representativeNode.get());
-                if (cluster._neighborCount > 0)
-                {
-                    if (worldMT->_clusterShowText.valid())
-                    {
-                        worldMT->_clusterShowText->setText(std::to_string(cluster._neighborCount + 1), osgText::String::ENCODING_UTF8);
-                    }
-                    worldMT->_traverseIveMT = false;
-                }
-                else
-                {
-                    worldMT->_traverseIveMT = true;
-                }
-            }
         }
     }
     //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -261,8 +224,8 @@ namespace CustomUtil
         // 只有在 Cull 阶段才执行聚类计算和拦截
         if (nv.getVisitorType() == osg::NodeVisitor::CULL_VISITOR)
         {
-            osgUtil::CullVisitor* cv = osgEarth::Culling::asCullVisitor(nv);
-
+            //osgUtil::CullVisitor* cv = osgEarth::Culling::asCullVisitor(nv);
+            osgUtil::CullVisitor* cv = static_cast<osgUtil::CullVisitor*>(&nv);
             if (!_enabled)
             {
                 // 如果功能关闭，回退到普通 Group 的行为，全部接受遍历
@@ -273,58 +236,39 @@ namespace CustomUtil
                 return;
             }
 
-            if (_mapNode.valid())
+            const osg::Matrixd& currentViewMatrix = cv->getCurrentCamera()->getViewMatrix();
+            // 缓存聚类结果，在相机移动或者_dirty = true时重算
+            if (
+                ((this->_lastViewMatrix != currentViewMatrix) && (cv->getFrameStamp()->getFrameNumber() - this->_lastClusterFrame > 5)) ||
+                this->_dirty
+                )
             {
-                const osg::Matrixd& currentViewMatrix = cv->getCurrentCamera()->getViewMatrix();
+                this->_lastClusterFrame = cv->getFrameStamp()->getFrameNumber();
+                osg::Vec3d eye, center, up;
+                cv->getCurrentCamera()->getViewMatrixAsLookAt(eye, center, up);
+                //_horizon->setEye(eye);
 
-                osg::CullingSet::Mask cullingMask = cv->getCurrentCullingSet().getCullingMask();
-                //显示气泡poi,去掉细节裁剪
-                if (this->_showPlaceNodePoi)
+                _clusters.clear();
+                getClusters(cv, _clusters);
+                // 触发用户回调
+                if (_onClusterGeneratedCallback)
                 {
-                    osg::CullingSet::Mask noSmallPixelCullingMask = cullingMask & (~osg::CullingSet::MaskValues::SMALL_FEATURE_CULLING);
-                    cv->getCurrentCullingSet().setCullingMask(noSmallPixelCullingMask);
-                }
-
-                // 缓存聚类结果，在相机移动或者_dirty = true时重算
-                if (
-                    ((this->_lastViewMatrix != currentViewMatrix) && (cv->getFrameStamp()->getFrameNumber() - this->_lastClusterFrame > CConfig::_deltaClusterFrame)) ||
-                    this->_dirty
-                    )
-                {
-                    this->_lastClusterFrame = cv->getFrameStamp()->getFrameNumber();
-                    osg::Vec3d eye, center, up;
-                    cv->getCurrentCamera()->getViewMatrixAsLookAt(eye, center, up);
-                    _horizon->setEye(eye);
-
-                    _clusters.clear();
-                    getClusters(cv, _clusters);
-                    // 触发用户回调
-                    if (_onClusterGeneratedCallback)
+                    for (ClusterList::iterator itr = _clusters.begin(); itr != _clusters.end(); ++itr)
                     {
-                        for (ClusterList::iterator itr = _clusters.begin(); itr != _clusters.end(); ++itr)
-                        {
-                            (*_onClusterGeneratedCallback)(*itr);
-                        }
-                    }
-
-                    this->_dirty = false;
-                    this->_lastViewMatrix = currentViewMatrix;
-                }
-
-                for (ClusterList::iterator itr = _clusters.begin(); itr != _clusters.end(); ++itr)
-                {
-                    if (itr->representativeNode.valid())
-                    {
-                        itr->representativeNode->accept(nv);
+                        (*_onClusterGeneratedCallback)(*itr);
                     }
                 }
 
-                if (this->_showPlaceNodePoi)
-                {
-                    //去掉细节裁切
-                    cv->getCurrentCullingSet().setCullingMask(cullingMask);
-                }
+                this->_dirty = false;
+                this->_lastViewMatrix = currentViewMatrix;
+            }
 
+            for (ClusterList::iterator itr = _clusters.begin(); itr != _clusters.end(); ++itr)
+            {
+                if (itr->representativeNode.valid())
+                {
+                    itr->representativeNode->accept(nv);
+                }
             }
         }
         else
@@ -336,11 +280,6 @@ namespace CustomUtil
                 itr->get()->accept(nv);
             }
         }
-    }
-
-    bool ModelClusterNode::isShowPlaceNodePoi()
-    {
-        return this->_showPlaceNodePoi;
     }
 
 } // namespace CustomUtil

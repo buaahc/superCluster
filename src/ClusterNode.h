@@ -4,20 +4,29 @@
 #include <osg/Node>
 #include <osg/Group>
 #include <osg/Camera>
+#include <osg/MatrixTransform>
 #include <osg/observer_ptr>
 #include <osgEarth/MapNode>
 #include <osgEarth/Horizon>
 #include <vector>
-#include "SceneCore/SceneCoreExport.h"
+#include "SceneCoreExport.h"
 
 namespace CustomUtil
 {
+    class CPickMatrixTransform :public osg::MatrixTransform
+    {
+    public:
+        //下面变量全部用于poi聚合
+        bool _showClusterPoi = true;//用于poi聚合
+        int _clusterPriority = -1;//聚合优先级
+    };
+
     /**
      * ModelClusterNode 基于屏幕空间的像素距离，对任意通用 3D 模型或节点进行聚类。
      * 聚类过程中，完全不修改子节点的任何属性（如 NodeMask）。
      * 它通过在 Cull 阶段有选择性地中止被聚合节点的遍历（不调用 accept），来实现视图安全的剔除优化。
      */
-    class SCENECORE_API ModelClusterNode : public osg::Node
+    class ModelClusterNode : public osg::Node
     {
     public:
         // 聚类簇结构
@@ -45,10 +54,7 @@ namespace CustomUtil
 
     public:
         //bool showPlaceNodePoi是否显示聚合气泡
-        ModelClusterNode(osgEarth::MapNode* mapNode, bool showPlaceNodePoi);
-
-        void setMapNode(osgEarth::MapNode* mapNode);
-        osgEarth::MapNode* getMapNode() const;
+        ModelClusterNode();
 
         void addNode(osg::Node* node);
         void removeNode(osg::Node* node);
@@ -68,7 +74,6 @@ namespace CustomUtil
 
         // 核心：拦截遍历过程
         virtual void traverse(osg::NodeVisitor& nv);
-        bool isShowPlaceNodePoi();
     protected:
         virtual ~ModelClusterNode() {}
 
@@ -83,7 +88,6 @@ namespace CustomUtil
         bool _dirtyIndex;
         bool _dirty;
 
-        osg::observer_ptr< osgEarth::MapNode > _mapNode;
         osg::ref_ptr< CanClusterCallback > _canClusterCallback;
         osg::ref_ptr< OnClusterGeneratedCallback > _onClusterGeneratedCallback;
         osg::ref_ptr< osgEarth::Horizon > _horizon;
@@ -91,7 +95,6 @@ namespace CustomUtil
         osg::Matrixd _lastViewMatrix;
         ClusterList _clusters;
         int _lastClusterFrame = -100000;
-        bool _showPlaceNodePoi = false;
     };
 }
 
