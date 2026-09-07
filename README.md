@@ -1,5 +1,7 @@
 基于osg/osgEarth引擎编写的模型聚合方案，理论上可以支持任意模型进行聚合
 
+90000个cessna.ive小飞机模型效果展示
+
 https://github.com/user-attachments/assets/a2bac41e-b300-4125-be3c-f31712d60b71
 
 未启用聚合
